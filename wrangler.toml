@@ -1,0 +1,30 @@
+name = "kommando-quiz"
+main = "cloudflare/worker.js"
+compatibility_date = "2025-06-01"
+workers_dev = true
+
+# Das Spiel selbst (HTML, JavaScript, Grafik)
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = true
+
+# Multiplayer-Server (Quiz-Duell, Gefecht 5 gegen 5) über WebSocket
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "HubDO"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["HubDO"]
+
+# Admin-Konten (Benutzernamen, mit Komma getrennt). Der Admin-Code ist geheim (Secret ADMIN_CODE)
+# und wird vom GitHub-Actions-Workflow aus dem Repository-Secret ADMIN_CODE gesetzt.
+[vars]
+ADMIN_NAMES = "Dinnerboneagg"
+
+# Konten, Fortschritt, Rangliste. database_id setzt der GitHub-Actions-Workflow ein.
+[[d1_databases]]
+binding = "DB"
+database_name = "kommando-quiz-db"
+database_id = "__D1_DATABASE_ID__"
