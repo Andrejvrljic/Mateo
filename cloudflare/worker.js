@@ -5,7 +5,7 @@ import { Hub } from '../server/hub.js';
 import { Store } from '../server/store.js';
 import { configureAdmin } from '../server/admin.js';
 
-const adminFromEnv = (env) => configureAdmin({ names: env.ADMIN_NAMES || 'Dinnerboneagg', code: env.ADMIN_CODE || '' });
+const adminFromEnv = (env) => configureAdmin({ names: env.ADMIN_NAMES || '3fach3', code: env.ADMIN_CODE || '' });
 const json = (status, data) => new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
 
 export class HubDO {

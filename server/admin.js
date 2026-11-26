@@ -1,6 +1,6 @@
 // Admins: Benutzernamen (öffentlich, ADMIN_NAMES in wrangler.toml) + Admin-Code (geheim: GitHub-/Cloudflare-Secret ADMIN_CODE).
 // Ein Admin muss mit einem Admin-Konto angemeldet sein UND den Admin-Code eingeben.
-const cfg = { names: ['dinnerboneagg'], code: '' };
+const cfg = { names: ['3fach3'], code: '' };
 
 export function configureAdmin({ names, code } = {}) {
   if (names) cfg.names = String(names).split(',').map((s) => s.trim().toLowerCase()).filter(Boolean);
