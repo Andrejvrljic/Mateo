@@ -21,7 +21,7 @@ new_sqlite_classes = ["HubDO"]
 # Admin-Konten (Benutzernamen, mit Komma getrennt). Der Admin-Code ist geheim (Secret ADMIN_CODE)
 # und wird vom GitHub-Actions-Workflow aus dem Repository-Secret ADMIN_CODE gesetzt.
 [vars]
-ADMIN_NAMES = "Dinnerboneagg"
+ADMIN_NAMES = "3fach3"
 
 # Konten, Fortschritt, Rangliste. database_id setzt der GitHub-Actions-Workflow ein.
 [[d1_databases]]

@@ -15,7 +15,7 @@ const PUBLIC = path.join(__dirname, '..', 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
 
 export function startServer({ port = 3000, dbPath = path.join(__dirname, '..', 'data', 'kommando.db'), quiet = false } = {}) {
-  configureAdmin({ names: process.env.ADMIN_NAMES || 'Dinnerboneagg', code: process.env.ADMIN_CODE || '' });
+  configureAdmin({ names: process.env.ADMIN_NAMES || '3fach3', code: process.env.ADMIN_CODE || '' });
   const d1 = new NodeD1(dbPath);
   const db = new Store(d1);
   const hub = new Hub(db);

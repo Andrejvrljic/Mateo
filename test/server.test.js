@@ -9,7 +9,7 @@ let app, base, wsBase;
 before(async () => {
   if (process.env.TEST_URL) base = process.env.TEST_URL.replace(/\/$/, '');
   else {
-    process.env.ADMIN_NAMES = 'Dinnerboneagg';
+    process.env.ADMIN_NAMES = '3fach3';
     process.env.ADMIN_CODE = 'TestCode123';
     app = await startServer({ port: 0, dbPath: ':memory:', quiet: true });
     base = `http://127.0.0.1:${app.port}`;
@@ -224,7 +224,7 @@ test('Schnelles Spiel: öffentliche Lobby startet von selbst mit Bots', { skip: 
 
 // Nur lokal: der echte Admin-Code ist geheim
 test('Admin: nur mit Admin-Konto und Code', { skip: !!process.env.TEST_URL }, async () => {
-  const adm = await api('POST', '/api/signup', { login: 'Dinnerboneagg', password: 'geheim123' });
+  const adm = await api('POST', '/api/signup', { login: '3fach3', password: 'geheim123' });
   assert.equal(adm.status, 200);
   assert.equal(adm.data.account.admin, true);
   const P = await signup();
