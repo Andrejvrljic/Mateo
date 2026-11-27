@@ -153,10 +153,18 @@ test('Minispiele: Belohnung, Begrenzung, Bestenliste', async () => {
 });
 
 const STA = { battle: { x: 23, z: -13 }, quiz: { x: 0, z: -22 }, range: { x: 27, z: 10 } };
+// Wie das echte Spiel: Positionen laufend senden (10x pro Sekunde), bis alle auf der Platte stehen
 async function onPlate(socks, plate, n) {
   const p = STA[plate];
-  socks.forEach((s, i) => s.send({ t: 'pos', x: p.x + i * 0.5, z: p.z, ry: 0, m: 0 }));
-  return socks[0].wait((m) => m.t === 'w' && m.pl[plate] && m.pl[plate].m.length === n);
+  let on = 1; // der erste Spieler geht zuerst drauf (wird Chef), dann die anderen
+  const send = () => socks.slice(0, on).forEach((s, i) => s.send({ t: 'pos', x: p.x + i * 0.5, z: p.z, ry: 0, m: 0 }));
+  send();
+  const iv = setInterval(send, 100);
+  try {
+    await socks[0].wait((m) => m.t === 'w' && m.pl[plate] && m.pl[plate].m.length === 1, 12000);
+    on = socks.length;
+    return await socks[0].wait((m) => m.t === 'w' && m.pl[plate] && m.pl[plate].m.length === n, 12000);
+  } finally { clearInterval(iv); }
 }
 async function twoInWorld(server = 'alpha') {
   const A = await signup(), B = await signup();
@@ -173,8 +181,8 @@ test('Welten: Serverliste, gemeinsamer Server, Spieler sehen sich laufen', async
   assert.equal(wl.list.length, 3);
   assert.ok(wl.list.find((w) => w.id === 'bravo').players >= 2);
   await b.wait((m) => m.t === 'wplayers' && m.list.some((p) => p.key === ka) && m.list.some((p) => p.key === kb));
-  a.send({ t: 'pos', x: 5, z: 7, ry: 1, m: 1 });
-  const seen = await b.wait((m) => m.t === 'w' && m.p.some((p) => p[0] === ka && p[1] === 5 && p[2] === 7));
+  const iv = setInterval(() => a.send({ t: 'pos', x: 5, z: 7, ry: 1, m: 1 }), 100);
+  const seen = await b.wait((m) => m.t === 'w' && m.p.some((p) => p[0] === ka && p[1] === 5 && p[2] === 7), 12000).finally(() => clearInterval(iv));
   assert.ok(seen);
   a.send({ t: 'wleave' }); await a.wait((m) => m.t === 'wleft');
   a.close(); b.close();

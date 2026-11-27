@@ -109,13 +109,16 @@ export function findPath(grid, sx, sy, tx, ty) {
   const [ax, ay] = nearestFree(grid, sx, sy), [bx, by] = nearestFree(grid, tx, ty);
   const start = ay * W + ax, goal = by * W + bx;
   const gS = new Float32Array(W * H).fill(1e9), from = new Int32Array(W * H).fill(-1), closed = new Uint8Array(W * H);
-  const open = [start]; gS[start] = 0;
+  gS[start] = 0;
   const hf = (i) => { const x = i % W, y = (i / W) | 0, dx = Math.abs(x - bx), dy = Math.abs(y - by); return Math.max(dx, dy) + 0.414 * Math.min(dx, dy); };
-  const fS = new Float32Array(W * H).fill(1e9); fS[start] = hf(start);
+  // Prioritätswarteschlange (binärer Heap) über [f, Index]
+  const heap = [];
+  const push = (f, i) => { heap.push([f, i]); let k = heap.length - 1; while (k > 0) { const p = (k - 1) >> 1; if (heap[p][0] <= heap[k][0]) break; [heap[p], heap[k]] = [heap[k], heap[p]]; k = p; } };
+  const pop = () => { const top = heap[0], last = heap.pop(); if (heap.length) { heap[0] = last; let k = 0; for (;;) { const l = 2 * k + 1, r = l + 1; let m = k; if (l < heap.length && heap[l][0] < heap[m][0]) m = l; if (r < heap.length && heap[r][0] < heap[m][0]) m = r; if (m === k) break; [heap[m], heap[k]] = [heap[k], heap[m]]; k = m; } } return top[1]; };
+  push(hf(start), start);
   let n = 0;
-  while (open.length && n++ < 4000) {
-    let bi = 0; for (let i = 1; i < open.length; i++) if (fS[open[i]] < fS[open[bi]]) bi = i;
-    const cur = open[bi]; open[bi] = open[open.length - 1]; open.pop();
+  while (heap.length && n++ < 4000) {
+    const cur = pop();
     if (cur === goal) break;
     if (closed[cur]) continue;
     closed[cur] = 1;
@@ -128,7 +131,7 @@ export function findPath(grid, sx, sy, tx, ty) {
       if (grid[ni] || closed[ni]) continue;
       if (dx && dy && (grid[cy * W + nx] || grid[ny * W + cx])) continue;
       const ng = gS[cur] + (dx && dy ? 1.414 : 1);
-      if (ng < gS[ni]) { gS[ni] = ng; fS[ni] = ng + hf(ni); from[ni] = cur; open.push(ni); }
+      if (ng < gS[ni]) { gS[ni] = ng; from[ni] = cur; push(ng + hf(ni), ni); }
     }
   }
   if (from[goal] === -1 && goal !== start) return null;

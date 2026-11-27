@@ -45,7 +45,7 @@ export async function handleApi(db, { method, path, query = {}, body = {}, token
         return out(200, { board, top: await db.leaderboard(board, 50) });
       }
       case 'POST /api/signup': {
-        if (limited('signup:' + ip, 20, 10 * 60000)) return out(429, { error: 'Zu viele neue Konten – später nochmal.' });
+        if (limited('signup:' + ip, 60, 10 * 60000)) return out(429, { error: 'Zu viele neue Konten – später nochmal.' });
         const r = await db.createAccount(String(body.login || '').trim(), body.password);
         if (r.error) return out(400, { error: r.error });
         return out(200, { token: r.token, ...(await publicProfile(db, await db.account(r.id))), news: await serverInfo(db) });
