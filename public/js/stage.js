@@ -1,17 +1,16 @@
 // Vollbild-Spielfläche: Canvas, Spielschleife, Eingabe (Tastatur, Maus, Touch mit zwei virtuellen Sticks)
-export function createStage({ sticks = false, onExit, webgl = false, stickLabels = ['BEWEGEN', 'ZIELEN + FEUER'] } = {}) {
+export function createStage({ sticks = false, onExit } = {}) {
   const root = document.createElement('div');
   root.className = 'stage';
-  root.innerHTML = (webgl ? '<canvas class="gl"></canvas>' : '') + '<canvas class="c2d"></canvas><div class="hud"></div><button class="exit" title="Beenden">✕</button>';
+  root.innerHTML = '<canvas></canvas><div class="hud"></div><button class="exit" title="Beenden">✕</button>';
   document.body.appendChild(root);
-  const canvas = root.querySelector('canvas.c2d');
-  const glCanvas = root.querySelector('canvas.gl');
+  const canvas = root.querySelector('canvas');
   const hud = root.querySelector('.hud');
   const g = canvas.getContext('2d');
   const st = {
-    root, canvas, glCanvas, hud, g, paused: false, w: 0, h: 0, dpr: 1, sticksOn: sticks, touch: false,
+    root, canvas, hud, g, w: 0, h: 0, dpr: 1, sticksOn: sticks, touch: false,
     keys: new Set(), pressed: new Set(),
-    mouse: { x: 0, y: 0, down: false, active: false, dx: 0, dy: 0, wheel: 0 },
+    mouse: { x: 0, y: 0, down: false, active: false },
     taps: [], // { x, y, long, right }
     move: { x: 0, y: 0, active: false, ox: 0, oy: 0, id: null },
     aim: { x: 0, y: 0, mag: 0, active: false, ox: 0, oy: 0, id: null },
@@ -22,7 +21,6 @@ export function createStage({ sticks = false, onExit, webgl = false, stickLabels
     st.dpr = Math.min(2, window.devicePixelRatio || 1);
     st.w = root.clientWidth; st.h = root.clientHeight;
     canvas.width = Math.round(st.w * st.dpr); canvas.height = Math.round(st.h * st.dpr);
-    if (st.onResize) st.onResize(st.w, st.h);
   }
   resize();
   const ro = new ResizeObserver(resize); ro.observe(root);
@@ -30,7 +28,7 @@ export function createStage({ sticks = false, onExit, webgl = false, stickLabels
   const kd = (e) => {
     if (e.target && e.target.tagName === 'INPUT') return;
     const k = e.key.toLowerCase();
-    if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', 'tab'].includes(k)) e.preventDefault();
+    if ([' ', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(k)) e.preventDefault();
     if (!st.keys.has(k)) st.pressed.add(k);
     st.keys.add(k);
     if (k === 'escape') exit();
@@ -45,7 +43,6 @@ export function createStage({ sticks = false, onExit, webgl = false, stickLabels
   const pos = (e) => { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; };
   const longTimers = new Map();
   canvas.addEventListener('contextmenu', (e) => e.preventDefault());
-  canvas.addEventListener('wheel', (e) => { e.preventDefault(); st.mouse.wheel += Math.sign(e.deltaY); }, { passive: false });
   canvas.addEventListener('pointerdown', (e) => {
     const p = pos(e);
     canvas.setPointerCapture?.(e.pointerId);
@@ -76,7 +73,6 @@ export function createStage({ sticks = false, onExit, webgl = false, stickLabels
       s.x = dx / STICK_R; s.y = dy / STICK_R; s.mag = Math.min(1, Math.hypot(s.x, s.y));
       return;
     }
-    st.mouse.dx += p.x - st.mouse.x; st.mouse.dy += p.y - st.mouse.y;
     st.mouse.x = p.x; st.mouse.y = p.y; st.mouse.active = true;
   });
   const up = (e) => {
@@ -107,7 +103,7 @@ export function createStage({ sticks = false, onExit, webgl = false, stickLabels
   st.drawSticks = () => {
     if (!st.sticksOn || !st.touch) return;
     const g2 = g;
-    for (const [s, label] of [[st.move, stickLabels[0]], [st.aim, stickLabels[1]]]) {
+    for (const [s, label] of [[st.move, 'BEWEGEN'], [st.aim, 'ZIELEN + FEUER']]) {
       const isLeft = s === st.move;
       const ox = s.active ? s.ox : (isLeft ? 90 : st.w - 90), oy = s.active ? s.oy : st.h - 100;
       g2.globalAlpha = s.active ? 0.5 : 0.22;
@@ -123,13 +119,11 @@ export function createStage({ sticks = false, onExit, webgl = false, stickLabels
   let last = performance.now();
   function loop(now) {
     if (!st.alive) return;
-    if (st.paused) { last = now; requestAnimationFrame(loop); return; }
     const dt = Math.min(0.05, (now - last) / 1000); last = now;
     g.setTransform(st.dpr, 0, 0, st.dpr, 0, 0);
     if (st.frame) st.frame(dt, now);
     st.pressed.clear();
     st.taps.length = 0;
-    st.mouse.dx = 0; st.mouse.dy = 0; st.mouse.wheel = 0;
     requestAnimationFrame(loop);
   }
   requestAnimationFrame(loop);
@@ -147,8 +141,6 @@ export function createStage({ sticks = false, onExit, webgl = false, stickLabels
     root.remove();
   }
   st.destroy = destroy;
-  st.hide = () => { st.paused = true; root.style.display = 'none'; st.keys.clear(); st.mouse.down = false; for (const s of [st.move, st.aim]) { s.id = null; s.active = false; s.x = s.y = 0; s.mag = 0; } };
-  st.show = () => { st.paused = false; root.style.display = ''; resize(); };
 
   // Overlay-Karte (Hilfe, Ergebnis)
   st.overlay = (inner) => {

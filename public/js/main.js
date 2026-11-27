@@ -1,12 +1,10 @@
-// Kommando-Quiz – Oberfläche: Startbildschirm, Welten-Auswahl, 3D-Welt mit Druckplatten,
-// Quiz, Quiz-Duell, Gefecht, Minispiele, Shop, Medaillen, Rangliste, Lexikon, Einstellungen, Admin
+// Kommando-Quiz – Oberfläche: Anmeldung, Hauptquartier, Quiz, Quiz-Duell, Gefecht, Minispiele, Shop, Medaillen, Rangliste, Lexikon, Admin
 import { api, session, live } from './net.js';
 import { $, $$, esc, fmt, toast } from './ui.js';
 import { sfx, isMuted, setMuted } from './audio.js';
 import { rankBadge, skinPreview } from './draw.js';
 import { createStage } from './stage.js';
-import { createWorld } from './world3d.js';
-import { startBattle3d } from './battle3d.js';
+import { startBattle } from './battleview.js';
 import { CATEGORIES, QUIZ_TIME } from '../shared/questions.js';
 import { rankInfo, SKINS, SKIN_ORDER, JOKER_PRICE, MEDALS, MEDAL_ORDER, GAMES, dayString } from '../shared/progress.js';
 import { LEXICON } from '../shared/lexicon.js';
@@ -20,8 +18,6 @@ const MINI = { range, aa, para, mines, morse };
 const app = $('#app');
 const S = { profile: null, account: null, news: null };
 let screenCleanup = null;
-let world = null;      // aktuelle 3D-Welt
-let current = '';
 
 function show(htmlStr, cleanup = null) {
   if (screenCleanup) { try { screenCleanup(); } catch { /* egal */ } }
@@ -33,17 +29,18 @@ function setData(d) {
   if (d.profile) S.profile = d.profile;
   if (d.account) S.account = d.account;
   if (d.news) S.news = d.news;
-  if (world && d.profile) world.setSkin(d.profile.skin);
 }
+const backBtn = (label = '← Hauptquartier') => `<button class="back" data-go="home">${label}</button>`;
 app.addEventListener('click', (e) => {
   const b = e.target.closest('[data-go]');
-  if (!b) return;
-  sfx.click();
-  const r = { home, settings, account, play, admin, world: returnToWorld };
-  (r[b.dataset.go] || home)();
+  if (b) { sfx.click(); go(b.dataset.go, b.dataset.arg); }
 });
-const backHome = '<button class="back" data-go="home">← Startbildschirm</button>';
-const backWorld = '<button class="back" data-go="world">← Zurück in die Welt</button>';
+
+function go(where, arg) {
+  const r = { home, quiz: quizMenu, duel: duelMenu, battle: battleMenu, shop, medals, ranks: leaderboard, lexicon, profile, admin };
+  if (MINI[where]) return playMini(MINI[where]);
+  (r[where] || home)(arg);
+}
 
 // Live-Nachrichten, die überall ankommen
 live.on((m) => {
@@ -51,25 +48,14 @@ live.on((m) => {
   if (m.t === 'profile') { setData(m); if (current === 'home') home(); }
   if (m.t === 'kicked') { session.token = ''; toast('Dein Konto wurde gesperrt.', 'err'); setTimeout(() => location.reload(), 1500); }
 });
-
-function announceExtras(res) {
-  if (!res) return;
-  if (res.rankUp) { toast(`⭐ Beförderung! Du bist jetzt ${res.rankUp}`, 'gold'); sfx.win(); }
-  for (const m of res.medals || []) toast(`🏅 Neue Medaille: ${MEDALS[m].name} (+50 Münzen)`, 'gold');
-}
-function rewardHTML(res) {
-  if (!res) return '';
-  return `<div class="rewards"><span class="pill gold">+${res.xp} EP</span><span class="pill gold">+${res.coins} 🪙</span></div>
-    ${res.rankUp ? `<div class="rankup">⭐ BEFÖRDERT ZUM ${esc(res.rankUp.toUpperCase())}! ⭐</div>` : ''}
-    ${(res.medals || []).map((m) => `<div class="medal-new">${MEDALS[m].icon} Neue Medaille: ${MEDALS[m].name}</div>`).join('')}`;
-}
+let current = '';
 
 // ================= Anmelden =================
 function authView(mode = 'signup', msg = '') {
   current = 'auth';
   show(`<div class="auth">
     <div class="logo">KOMMANDO<span>QUIZ</span></div>
-    <p class="tagline">Militär-Quiz · Minispiele · Gefecht 5 gegen 5 · 3D-Welt mit Freunden</p>
+    <p class="tagline">Militär-Quiz · Minispiele · Gefecht 5 gegen 5 mit Panzern</p>
     <div class="card">
       <div class="tabs"><button data-m="signup" class="${mode === 'signup' ? 'on' : ''}">Konto erstellen</button><button data-m="login" class="${mode === 'login' ? 'on' : ''}">Anmelden</button></div>
       <form id="authForm" autocomplete="on">
@@ -82,6 +68,7 @@ function authView(mode = 'signup', msg = '') {
         <div class="msg" id="aMsg">${esc(msg)}</div>
       </form>
     </div>
+    <p class="muted" style="text-align:center;font-size:13px;margin-top:14px">Dein Fortschritt wird online gespeichert – du kannst dich auf jedem Gerät anmelden.</p>
   </div>`);
   $$('.tabs button').forEach((b) => b.addEventListener('click', () => authView(b.dataset.m)));
   $('#authForm').addEventListener('submit', async (e) => {
@@ -94,169 +81,95 @@ function authView(mode = 'signup', msg = '') {
     if (r.status !== 200) { m.className = 'msg'; m.textContent = r.data.error || 'Fehler'; return; }
     session.token = r.data.token;
     setData(r.data);
-    live.close();
     sfx.right();
     home();
   });
 }
 
-// ================= Startbildschirm =================
-async function claimDaily() {
-  if (S.profile.daily.day === dayString()) return;
-  const r = await api('POST', '/api/action', { type: 'daily' });
-  if (r.status !== 200) return;
-  setData(r.data);
-  toast(`📅 Dienstantritt Tag ${r.data.result.streak}: +${r.data.result.coins} Münzen, +${r.data.result.xp} EP${r.data.result.joker ? ', +1 Joker' : ''}`, 'gold');
-  announceExtras(r.data.result);
-  if (current === 'home') home();
+// ================= Hauptquartier =================
+function header() {
+  const p = S.profile, r = rankInfo(p.xp);
+  return `<div class="hq-head">
+    ${rankBadge(r.i)}
+    <div class="who"><div class="name">${esc(p.name)}</div><div class="rank">${r.name}${S.account.admin ? ' <span class="tag">Admin</span>' : ''}</div>
+      <div class="xpbar"><i style="width:${Math.round(r.progress * 100)}%"></i></div>
+      <div class="xptext">${fmt(p.xp)} EP${r.next ? ` · nächster Rang: ${r.nextName} bei ${fmt(r.next)} EP` : ' · höchster Rang!'}</div></div>
+    <div class="row"><span class="pill gold" title="Münzen">🪙 ${fmt(p.coins)}</span><span class="pill" title="50:50-Joker">🃏 ${p.jokers}</span>
+    <button class="pill" data-go="profile" style="cursor:pointer" title="Profil & Einstellungen">⚙️</button></div>
+  </div>`;
 }
 
 function home() {
   current = 'home';
-  if (world) leaveWorld();
-  const p = S.profile, r = rankInfo(p.xp), n = S.news || {};
-  show(`<div class="start">
-    <div class="logo">KOMMANDO<span>QUIZ</span></div>
-    <div class="start-me">${rankBadge(r.i, 46)}<div><b>${esc(p.name)}</b><br><span class="rank">${r.name}</span></div><span class="spacer"></span><span class="pill gold">🪙 ${fmt(p.coins)}</span></div>
+  const p = S.profile, n = S.news || {};
+  const daily = p.daily.day !== dayString();
+  const best = (g) => (p.best[g] ? `Rekord: ${fmt(p.best[g])}` : 'Noch nicht gespielt');
+  show(`<div class="wrap">
+    ${header()}
     ${n.maintenance ? `<div class="banner warn">🛠️ ${esc(n.maintenance.text)}</div>` : ''}
     ${n.motd ? `<div class="banner">📢 ${esc(n.motd)}</div>` : ''}
-    <button class="btn gold play-btn" data-go="play">▶ SPIELEN</button>
-    <div class="start-row"><button class="btn dark" data-go="settings">⚙️ Einstellungen</button><button class="btn dark" data-go="account">👤 Konto</button></div>
-  </div>`);
-  claimDaily();
-}
-
-function settings() {
-  current = 'settings';
-  const gfxLow = (() => { try { return localStorage.getItem('kq-gfx') === 'low'; } catch { return false; } })();
-  show(`<div class="wrap" style="max-width:560px">${backHome}
-    <div class="title-bar"><h2>⚙️ Einstellungen</h2></div>
-    <div class="card list">
-      <div class="li"><b>Ton</b><span class="spacer"></span><button class="btn small ${isMuted() ? 'dark' : ''}" id="sMute">${isMuted() ? '🔇 Aus' : '🔊 An'}</button></div>
-      <div class="li"><b>Grafik</b><span class="spacer"></span><button class="btn small ${gfxLow ? 'dark' : ''}" data-gfx="high">Schön</button><button class="btn small ${gfxLow ? '' : 'dark'}" data-gfx="low">Schnell</button></div>
-      <div class="li" style="flex-direction:column;align-items:flex-start"><b>Steuerung</b><span class="muted" style="font-size:14px">PC: <b>WASD</b> laufen · Maus ziehen = Kamera · Mausrad = Zoom · Leertaste = springen<br>Handy/Tablet: linker Daumen laufen · rechter Daumen Kamera / zielen</span></div>
-    </div>
-    ${S.account.admin ? '<button class="btn dark" data-go="admin" style="margin-top:14px">🛠️ Admin-Bereich</button>' : ''}
-  </div>`);
-  $('#sMute').addEventListener('click', () => { setMuted(!isMuted()); settings(); });
-  $$('[data-gfx]').forEach((b) => b.addEventListener('click', () => { try { localStorage.setItem('kq-gfx', b.dataset.gfx); } catch { /* egal */ } settings(); }));
-}
-
-function account() {
-  current = 'account';
-  const p = S.profile, r = rankInfo(p.xp);
-  show(`<div class="wrap" style="max-width:560px">${backHome}
-    <div class="title-bar"><h2>👤 Konto</h2></div>
-    <div class="card">
-      <div class="row">${rankBadge(r.i)}<div><b style="font-size:20px">${esc(S.account.login)}</b><br><span class="muted">${r.name} · ${fmt(p.xp)} EP · Platz ${S.account.place}</span></div></div>
-      <div class="xpbar"><i style="width:${Math.round(r.progress * 100)}%"></i></div>
-      <div class="xptext">${r.next ? `Nächster Rang: ${r.nextName} bei ${fmt(r.next)} EP` : 'Höchster Rang!'}</div>
-      <div class="rewards" style="justify-content:flex-start"><span class="pill gold">🪙 ${fmt(p.coins)}</span><span class="pill">🃏 ${p.jokers} Joker</span><span class="pill">🏅 ${p.medals.length} Medaillen</span><span class="pill">📅 ${p.daily.streak} Tage</span></div>
-      <button class="btn red" id="aOut" style="margin-top:8px">Abmelden</button>
-    </div>
-    <p class="muted" style="font-size:14px">Shop, Medaillen, Rangliste und Lexikon findest du in der Welt – geh einfach auf die gelben Platten in der Mitte.</p>
-  </div>`);
-  $('#aOut').addEventListener('click', async () => { await api('POST', '/api/logout'); session.token = ''; live.close(); authView('login'); });
-}
-
-// ================= Welten-Auswahl =================
-async function connectLive() {
-  try { await live.connect(); return true; } catch (e) { toast(e.message || 'Keine Verbindung', 'err'); return false; }
-}
-async function play() {
-  current = 'play';
-  show(`<div class="wrap" style="max-width:760px">${backHome}
-    <div class="title-bar"><h2>🌍 Welt auswählen</h2></div>
-    <div class="section-h">SERVER – ZUSAMMEN SPIELEN</div>
-    <div class="list" id="srvList"><p class="muted">Lade Server …</p></div>
-    <div class="section-h">EIGENE WELTEN</div>
+    ${daily ? `<div class="banner row" style="justify-content:space-between"><span>📅 <b>Dienstantritt!</b> Hol dir deine tägliche Belohnung${p.daily.streak ? ` (Serie: ${p.daily.streak} Tage)` : ''}.</span><button class="btn gold small" id="daily">Abholen</button></div>` : ''}
     <div class="grid">
-      <button class="tile" id="wSolo"><span class="ic">🏕️</span><b>Eigene Welt</b><span>Allein spielen – nur du in der Kaserne</span></button>
-      <div class="tile"><span class="ic">🔒</span><b>Server mit Code</b><span>Eigener Server – Freunde kommen mit dem Code rein</span><input class="field" id="wName" maxlength="24" placeholder="Name (z. B. Mateos Kaserne)"><button class="btn" id="wCreate">Erstellen</button></div>
-      <div class="tile"><span class="ic">🔑</span><b>Mit Code beitreten</b><span>Code von deinem Freund</span><input class="field" id="wCode" maxlength="4" placeholder="CODE" style="text-transform:uppercase;letter-spacing:4px;font-weight:800"><button class="btn" id="wJoin">Beitreten</button></div>
+      <button class="tile hero" data-go="quiz"><span class="ic">🎖️</span><b>Militär-Quiz</b><span>${Object.keys(CATEGORIES).length - 1} Themen · über 150 Fragen · Joker</span><span class="best">${p.best.quiz ? `Rekord: ${fmt(p.best.quiz)} Punkte` : 'Starte deine erste Prüfung!'}</span></button>
+      <button class="tile online" data-go="duel"><span class="ic">⚔️</span><b>Quiz-Duell</b><span>Online gegen andere Spieler</span><span class="best">Siege: ${p.stats.duelWins}</span></button>
+      <button class="tile online" data-go="battle"><span class="ic">🪖</span><b>Gefecht 5 gegen 5</b><span>Mit Panzer – selbst schießen! Offline oder online</span><span class="best">Siege: ${p.stats.battleWins} · Treffer: ${p.stats.kills}</span></button>
+    </div>
+    <div class="section-h">MINISPIELE</div>
+    <div class="grid">
+      ${['range', 'aa', 'para', 'mines', 'morse'].map((g) => `<button class="tile" data-go="${g}"><span class="ic">${GAMES[g].icon}</span><b>${GAMES[g].name}</b><span>${{ range: 'Panzer fahren und Zielpuppen treffen', aa: 'Drohnen und Flugzeuge abwehren', para: 'Im Ziel landen', mines: 'Das Minenfeld räumen', morse: 'Morsezeichen entschlüsseln' }[g]}</span><span class="best">${best(g)}</span></button>`).join('')}
+    </div>
+    <div class="section-h">KASERNE</div>
+    <div class="grid small">
+      <button class="tile" data-go="shop"><span class="ic">🎨</span><b>Shop</b><span>Tarnmuster & Joker</span></button>
+      <button class="tile" data-go="medals"><span class="ic">🏅</span><b>Medaillen</b><span>${p.medals.length} / ${MEDAL_ORDER.length}</span></button>
+      <button class="tile" data-go="ranks"><span class="ic">🏆</span><b>Rangliste</b><span>Die Besten</span></button>
+      <button class="tile" data-go="lexicon"><span class="ic">📖</span><b>Lexikon</b><span>Fahrzeuge & Technik</span></button>
+      ${S.account.admin ? '<button class="tile" data-go="admin"><span class="ic">🛠️</span><b>Admin</b><span>Verwaltung</span></button>' : ''}
     </div>
   </div>`);
-  $('#wSolo').addEventListener('click', () => enterWorld({ solo: true }));
-  $('#wCreate').addEventListener('click', () => enterWorld({ create: true, name: $('#wName').value.trim() }));
-  $('#wJoin').addEventListener('click', () => { const c = $('#wCode').value.trim(); if (c.length === 4) enterWorld({ code: c }); else toast('Der Code hat 4 Zeichen.', 'err'); });
-  if (!(await connectLive())) { $('#srvList').innerHTML = '<p class="muted">Keine Verbindung zum Server.</p>'; return; }
-  const off = live.on((m) => {
-    if (m.t !== 'worlds' || current !== 'play') return;
-    off();
-    $('#srvList').innerHTML = m.list.map((s) => `<button class="li srv" data-srv="${s.id}"><span style="font-size:26px">🌐</span><b>${esc(s.name)}</b><span class="spacer"></span><span class="pill">👥 ${s.players}/${s.max}</span><span class="btn small">Beitreten</span></button>`).join('');
-    $$('[data-srv]').forEach((b) => b.addEventListener('click', () => enterWorld({ server: b.dataset.srv })));
+  const d = $('#daily');
+  if (d) d.addEventListener('click', async () => {
+    const r = await api('POST', '/api/action', { type: 'daily' });
+    if (r.status !== 200) return toast(r.data.error || 'Fehler', 'err');
+    setData(r.data);
+    sfx.coin();
+    toast(`📅 Tag ${r.data.result.streak}: +${r.data.result.coins} Münzen, +${r.data.result.xp} EP${r.data.result.joker ? ', +1 Joker' : ''}`, 'gold');
+    announceExtras(r.data.result);
+    home();
   });
-  live.send({ t: 'worlds' });
 }
 
-// ================= 3D-Welt =================
-let worldOff = null;
-async function enterWorld(msg) {
-  if (!(await connectLive())) return;
-  sfx.click();
-  if (worldOff) worldOff();
-  worldOff = live.on(onWorldMsg);
-  live.send({ t: 'wjoin', ...msg });
+function announceExtras(res) {
+  if (!res) return;
+  if (res.rankUp) { toast(`⭐ Beförderung! Du bist jetzt ${res.rankUp}`, 'gold'); sfx.win(); }
+  for (const m of res.medals || []) toast(`🏅 Neue Medaille: ${MEDALS[m].name} (+50 Münzen)`, 'gold');
 }
-function leaveWorld() {
-  if (worldOff) { worldOff(); worldOff = null; }
-  if (world) { world.destroy(); world = null; }
-  live.send({ t: 'wleave' });
-}
-function onWorldMsg(m) {
-  if (m.t === 'wjoined') {
-    if (world) world.destroy();
-    show('');
-    current = 'world';
-    world = createWorld({
-      me: { key: m.you, name: S.profile.name, skin: S.profile.skin }, info: m.world, x: m.x, z: m.z,
-      onMenu: worldMenu, onInfo: openInfo,
-    });
-    if (m.world.code) toast(`🔒 Dein Server-Code: ${m.world.code} – gib ihn deinen Freunden!`, 'gold');
-  } else if (m.t === 'error' && !world) { toast(m.msg, 'err'); }
-  else if (m.t === 'error') toast(m.msg, 'err');
-  else if (m.t === 'wkicked') { toast(m.msg, 'err'); leaveWorld(); home(); }
-  else if (m.t === 'closed') { if (world) { toast('Verbindung zum Server getrennt.', 'err'); leaveWorld(); home(); } }
-  else if (m.t === 'launch') {
-    hideWorld();
-    if (m.game === 'quiz') soloQuiz(m.cat, m.n);
-    else if (MINI[m.game]) playMini(MINI[m.game], m.group, m.players);
-  } else if (m.t === 'qstart') { hideWorld(); duelMsg(m); }
-  else if (['q', 'answered', 'reveal', 'qend'].includes(m.t)) duelMsg(m);
-  else if (m.t === 'bstart') { hideWorld(); battle(m); }
-  else if (m.t === 'gresult') groupResult(m);
-}
-function hideWorld() { if (world) world.hide(); current = 'game'; }
-function returnToWorld() {
-  if (screenCleanup) { try { screenCleanup(); } catch { /* egal */ } screenCleanup = null; }
-  app.innerHTML = '';
-  live.send({ t: 'back' });
-  if (world) { world.show(); current = 'world'; } else home();
-}
-function worldMenu() {
-  sfx.click();
-  const o = world.stage.overlay(`<h2 style="text-align:center">☰ Menü</h2>
-    <div class="list" style="margin-top:12px">
-      <button class="btn" id="mBack">▶ Weiterspielen</button>
-      <button class="btn dark" id="mSound">${isMuted() ? '🔇 Ton ist aus' : '🔊 Ton ist an'}</button>
-      <button class="btn red" id="mLeave">Welt verlassen</button>
-    </div>`);
-  o.querySelector('#mBack').onclick = () => o.remove();
-  o.querySelector('#mSound').onclick = () => { setMuted(!isMuted()); o.remove(); };
-  o.querySelector('#mLeave').onclick = () => { leaveWorld(); home(); };
-}
-function openInfo(id) {
-  hideWorld();
-  ({ shop, ranks: leaderboard, medals, lexicon }[id] || returnToWorld)();
+
+function rewardHTML(res) {
+  if (!res) return '';
+  return `<div class="rewards"><span class="pill gold">+${res.xp} EP</span><span class="pill gold">+${res.coins} 🪙</span></div>
+    ${res.rankUp ? `<div class="rankup">⭐ BEFÖRDERT ZUM ${esc(res.rankUp.toUpperCase())}! ⭐</div>` : ''}
+    ${(res.medals || []).map((m) => `<div class="medal-new">${MEDALS[m].icon} Neue Medaille: ${MEDALS[m].name}</div>`).join('')}`;
 }
 
 // ================= Solo-Quiz =================
-async function soloQuiz(cat, n = 10) {
-  const r = await api('POST', '/api/quiz/start', { cat, n });
-  if (r.status !== 200) { toast(r.data.error || 'Fehler', 'err'); return returnToWorld(); }
+function quizMenu() {
+  current = 'quiz';
+  show(`<div class="wrap">${backBtn()}
+    <div class="title-bar"><h2>🎖️ Militär-Quiz</h2><span class="pill">🃏 ${S.profile.jokers} Joker</span></div>
+    <p class="muted">10 Fragen, je ${QUIZ_TIME} Sekunden. Je schneller du richtig antwortest, desto mehr Punkte. Mit dem 🃏 <b>50:50-Joker</b> verschwinden zwei falsche Antworten.</p>
+    <div class="cats">${Object.entries(CATEGORIES).map(([k, c]) => `<button class="tile" data-cat="${k}"><span class="ic">${c.icon}</span><b>${c.name}</b></button>`).join('')}</div>
+  </div>`);
+  $$('[data-cat]').forEach((b) => b.addEventListener('click', () => { sfx.click(); soloQuiz(b.dataset.cat); }));
+}
+
+async function soloQuiz(cat) {
+  current = 'play';
+  const r = await api('POST', '/api/quiz/start', { cat });
+  if (r.status !== 200) return toast(r.data.error || 'Fehler', 'err');
   const { run, questions } = r.data;
-  let jokers = r.data.jokers, i = 0, total = 0, timer = null, locked = false;
-  const stop = () => clearInterval(timer);
+  let jokers = r.data.jokers, i = 0, total = 0, correct = 0, timer = null, locked = false;
+  const stop = () => { clearInterval(timer); };
   const view = () => {
     const q = questions[i];
     locked = false;
@@ -269,7 +182,8 @@ async function soloQuiz(cat, n = 10) {
       <div class="answers">${q.a.map((a, k) => `<button class="ans" data-k="${k}"><span class="k">${'ABCD'[k]}</span><span>${esc(a)}</span></button>`).join('')}</div>
       <div id="qFact"></div>
     </div></div>`, stop);
-    const t0 = performance.now(), bar = $('#qBar');
+    const t0 = performance.now();
+    const bar = $('#qBar');
     stop();
     let lastSec = QUIZ_TIME;
     timer = setInterval(() => {
@@ -279,7 +193,7 @@ async function soloQuiz(cat, n = 10) {
       if (left < 5 && Math.ceil(left) < lastSec) { lastSec = Math.ceil(left); sfx.tick(); }
       if (left <= 0) { stop(); answer(-1); }
     }, 50);
-    $('#qQuit').addEventListener('click', () => { stop(); returnToWorld(); });
+    $('#qQuit').addEventListener('click', () => { stop(); quizMenu(); });
     $$('.ans').forEach((b) => b.addEventListener('click', () => answer(+b.dataset.k)));
     $('#qJoker').addEventListener('click', async () => {
       if (locked) return;
@@ -297,37 +211,92 @@ async function soloQuiz(cat, n = 10) {
     $$('.ans').forEach((b) => { b.disabled = true; });
     if (c >= 0) $(`.ans[data-k="${c}"]`).classList.add('picked');
     const a = await api('POST', '/api/quiz/answer', { run, i, c });
-    if (a.status !== 200) { toast(a.data.error || 'Fehler', 'err'); return returnToWorld(); }
+    if (a.status !== 200) { toast(a.data.error || 'Fehler', 'err'); return quizMenu(); }
     $(`.ans[data-k="${a.data.right}"]`).classList.add('right');
     if (!a.data.correct && c >= 0) $(`.ans[data-k="${c}"]`).classList.add('wrong');
-    a.data.correct ? sfx.right() : sfx.wrong();
+    if (a.data.correct) { correct++; sfx.right(); } else sfx.wrong();
     total = a.data.total;
     $('#qFact').innerHTML = `<div class="fact">${a.data.correct ? `✅ Richtig! +${a.data.points} Punkte` : c < 0 ? '⏰ Zeit abgelaufen!' : '❌ Leider falsch.'}${a.data.fact ? `<br>💡 ${esc(a.data.fact)}` : ''}</div>
       <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn" id="qNext">${a.data.done ? 'ERGEBNIS' : 'WEITER →'}</button></div>`;
-    $('#qNext').addEventListener('click', () => { if (a.data.done) { setData(a.data); quizResult(a.data.reward); } else { i++; view(); } });
+    const nextFn = () => { if (a.data.done) { setData(a.data); quizResult(a.data.reward, cat); } else { i++; view(); } };
+    $('#qNext').addEventListener('click', nextFn);
     $('#qNext').focus();
   }
   view();
 }
-function quizResult(res) {
+
+function quizResult(res, cat) {
+  current = 'result';
   const grade = res.correct === res.total ? 'Ausgezeichnet!' : res.correct >= res.total * 0.7 ? 'Sehr gut!' : res.correct >= res.total * 0.4 ? 'Gut gemacht!' : 'Weiter üben, Soldat!';
   show(`<div class="wrap"><div class="quiz card">
     <div class="result-big"><div class="muted">${grade}</div><div class="num">${res.correct}/${res.total}</div><div>richtige Antworten · ${fmt(res.points)} Punkte</div></div>
     ${rewardHTML(res)}
-    <div class="row" style="justify-content:center;margin-top:16px"><button class="btn gold big" data-go="world">Zurück in die Welt</button></div>
+    <div class="row" style="justify-content:center;margin-top:16px"><button class="btn dark" data-go="home">Hauptquartier</button><button class="btn gold" id="again">Nochmal</button></div>
   </div></div>`);
   res.correct === res.total ? sfx.win() : sfx.coin();
+  $('#again').addEventListener('click', () => soloQuiz(cat));
 }
 
-// ================= Quiz-Duell (von der Druckplatte) =================
+// ================= Online: gemeinsame Lobby =================
+async function connectLive() {
+  try { await live.connect(); return true; } catch (e) { toast(e.message || 'Keine Verbindung', 'err'); return false; }
+}
+function lobbyView(kind, onMsg) {
+  return (m) => {
+    if (m.t === 'lobby') {
+      const isQuiz = kind === 'quiz';
+      show(`<div class="wrap"><button class="back" id="lLeave">← Lobby verlassen</button>
+        <div class="card" style="max-width:560px;margin:10px auto">
+          <h2 style="text-align:center">${isQuiz ? '⚔️ Quiz-Duell' : '🪖 Gefecht 5 gegen 5'}</h2>
+          ${m.pub ? `<p class="muted" style="text-align:center">Öffentliches Spiel – startet automatisch in <b>${m.startIn ?? '…'}</b> s</p>` : `<p class="muted" style="text-align:center">Raum-Code für deine Freunde:</p><div class="lobby-code">${esc(m.code)}</div>`}
+          ${isQuiz && m.cat ? `<p style="text-align:center">${CATEGORIES[m.cat].icon} ${CATEGORIES[m.cat].name}</p>` : ''}
+          <div class="list" style="margin:14px 0">${m.players.map((p) => `<div class="li"><span class="${p.team === null ? '' : 't' + p.team}">${p.team === null ? '👤' : p.team ? '🔴' : '🔵'} <b>${esc(p.name)}</b></span><span class="spacer"></span>${p.host ? '<span class="tag">Chef</span>' : ''}</div>`).join('')}</div>
+          <p class="muted" style="font-size:14px;text-align:center">${isQuiz ? 'Allein? Dann spielen Bots mit.' : 'Freie Plätze werden mit Bots aufgefüllt.'}</p>
+          ${m.host ? '<button class="btn gold big" id="lStart" style="width:100%">JETZT STARTEN</button>' : '<p style="text-align:center">Warte auf den Start …</p>'}
+        </div></div>`, () => {});
+      $('#lLeave').addEventListener('click', () => { live.send({ t: 'leave' }); unsubLobby(); kind === 'quiz' ? duelMenu() : battleMenu(); });
+      const s = $('#lStart');
+      if (s) s.addEventListener('click', () => { live.send({ t: 'start' }); s.disabled = true; });
+    } else if (m.t === 'error') { toast(m.msg, 'err'); }
+    else if (m.t === 'closed') { toast('Verbindung getrennt.', 'err'); unsubLobby(); home(); }
+    onMsg(m);
+  };
+}
+let unsubLobby = () => {};
+
+// ================= Quiz-Duell =================
+function duelMenu() {
+  current = 'duel';
+  show(`<div class="wrap">${backBtn()}
+    <div class="title-bar"><h2>⚔️ Quiz-Duell</h2></div>
+    <p class="muted">Alle bekommen die gleichen Fragen – wer schneller richtig antwortet, bekommt mehr Punkte. Platz 1 bekommt die größte Belohnung.</p>
+    <div class="grid">
+      <button class="tile hero" id="dQuick"><span class="ic">⚡</span><b>Schnelles Spiel</b><span>Mit anderen Spielern online – Bots füllen auf</span></button>
+      <div class="tile"><span class="ic">🔒</span><b>Raum erstellen</b><span>Für dich und deine Freunde</span>
+        <select class="field" id="dCat">${Object.entries(CATEGORIES).map(([k, c]) => `<option value="${k}">${c.icon} ${c.name}</option>`).join('')}</select>
+        <button class="btn" id="dCreate">Erstellen</button></div>
+      <div class="tile"><span class="ic">🔑</span><b>Mit Code beitreten</b><input class="field" id="dCode" maxlength="4" placeholder="CODE" style="text-transform:uppercase;letter-spacing:4px;font-weight:800"><button class="btn" id="dJoin">Beitreten</button></div>
+    </div></div>`);
+  const join = async (msg) => {
+    if (!(await connectLive())) return;
+    unsubLobby();
+    unsubLobby = live.on(lobbyView('quiz', duelMsg));
+    live.send({ t: 'join', kind: 'quiz', ...msg });
+  };
+  $('#dQuick').addEventListener('click', () => join({}));
+  $('#dCreate').addEventListener('click', () => join({ create: true, cat: $('#dCat').value, n: 10 }));
+  $('#dJoin').addEventListener('click', () => { const c = $('#dCode').value.trim(); if (c.length === 4) join({ code: c }); else toast('Der Code hat 4 Zeichen.', 'err'); });
+}
+
 let duel = null;
 function duelMsg(m) {
   if (m.t === 'qstart') {
-    duel = { players: m.players, scores: Object.fromEntries(m.players.map((p) => [p.key, 0])), answered: new Set(), picked: -1, timer: null };
-    show(`<div class="wrap"><div class="quiz"><div class="result-big"><div class="num">QUIZ-DUELL!</div><div>${m.n} Fragen · ${m.players.map((p) => esc(p.name)).join(' vs. ')}</div></div></div></div>`);
+    current = 'play';
+    duel = { players: m.players, scores: Object.fromEntries(m.players.map((p) => [p.key, 0])), answered: new Set(), q: null, picked: -1, timer: null };
+    show(`<div class="wrap"><div class="quiz"><div class="result-big"><div class="num">LOS!</div><div>${m.n} Fragen · ${m.players.length} Spieler</div></div></div></div>`);
     sfx.win();
-  } else if (m.t === 'q' && duel) {
-    duel.answered = new Set(); duel.picked = -1;
+  } else if (m.t === 'q') {
+    duel.q = m; duel.answered = new Set(); duel.picked = -1;
     clearInterval(duel.timer);
     show(`<div class="wrap"><div class="quiz">
       <div class="qhead"><button class="back" id="qQuit">✕ Verlassen</button><span class="spacer"></span><span class="pill">${CATEGORIES[m.cat].icon} Frage ${m.i + 1}/${m.n}</span></div>
@@ -346,28 +315,30 @@ function duelMsg(m) {
       live.send({ t: 'ans', i: m.i, c: duel.picked });
       sfx.click();
     }));
-    $('#qQuit').addEventListener('click', () => { live.send({ t: 'leave' }); duel = null; returnToWorld(); });
-  } else if (m.t === 'answered' && duel) { duel.answered.add(m.key); chips(); }
-  else if (m.t === 'reveal' && duel) {
+    $('#qQuit').addEventListener('click', () => { live.send({ t: 'leave' }); unsubLobby(); duelMenu(); });
+  } else if (m.t === 'answered') { duel.answered.add(m.key); chips(); }
+  else if (m.t === 'reveal') {
     clearInterval(duel.timer);
     $$('.ans').forEach((x) => { x.disabled = true; });
     const r = $(`.ans[data-k="${m.right}"]`); if (r) r.classList.add('right');
-    if (duel.picked >= 0 && duel.picked !== m.right) $(`.ans[data-k="${duel.picked}"]`)?.classList.add('wrong');
+    if (duel.picked >= 0 && duel.picked !== m.right) $(`.ans[data-k="${duel.picked}"]`).classList.add('wrong');
     duel.picked === m.right ? sfx.right() : sfx.wrong();
     for (const s of m.scores) duel.scores[s.key] = s.score;
     duel.answered = new Set();
     chips(m.scores);
     const f = $('#qFact'); if (f) f.innerHTML = m.fact ? `<div class="fact">💡 ${esc(m.fact)}</div>` : '';
-  } else if (m.t === 'qend' && duel) {
-    duel = null;
+  } else if (m.t === 'qend') {
+    unsubLobby();
     setData(m);
+    const me = S.account.login;
     show(`<div class="wrap"><div class="quiz card">
       <h2 style="text-align:center">🏁 Ergebnis</h2>
-      <div class="list" style="margin:14px 0">${m.ranking.map((p) => `<div class="li top${p.place} ${p.name === S.profile.name ? 'me' : ''}"><span class="pos">${p.place === 1 ? '🥇' : p.place === 2 ? '🥈' : p.place === 3 ? '🥉' : p.place}</span><b>${esc(p.name)}</b><span class="spacer"></span><span class="muted">${p.correct} richtig</span><span class="val">${fmt(p.score)}</span></div>`).join('')}</div>
+      <div class="list" style="margin:14px 0">${m.ranking.map((p) => `<div class="li top${p.place} ${p.name === S.profile.name && !p.bot ? 'me' : ''}"><span class="pos">${p.place === 1 ? '🥇' : p.place === 2 ? '🥈' : p.place === 3 ? '🥉' : p.place}</span><b>${esc(p.name)}</b><span class="spacer"></span><span class="muted">${p.correct} richtig</span><span class="val">${fmt(p.score)}</span></div>`).join('')}</div>
       ${m.reward ? `<p style="text-align:center;font-weight:800">${m.reward.won ? '🏆 Du hast das Duell gewonnen!' : `Platz ${m.reward.place}`}</p>` : ''}
       ${rewardHTML(m.reward)}
-      <div class="row" style="justify-content:center"><button class="btn gold big" data-go="world">Zurück in die Welt</button></div>
+      <div class="row" style="justify-content:center"><button class="btn dark" data-go="home">Hauptquartier</button><button class="btn gold" data-go="duel">Nochmal</button></div>
     </div></div>`);
+    void me;
     m.reward && m.reward.won ? sfx.win() : sfx.coin();
     announceExtras(m.reward && { medals: [], rankUp: m.reward.rankUp });
   }
@@ -376,31 +347,72 @@ function chips(scores) {
   const el = $('#chips'); if (!el || !duel) return;
   el.innerHTML = duel.players.map((p) => {
     const s = scores && scores.find((x) => x.key === p.key);
-    return `<span class="chip ${duel.answered.has(p.key) ? 'done' : ''}">👤 ${esc(p.name)} <span class="pts">${fmt(duel.scores[p.key] || 0)}</span>${s && s.pts ? ` <span style="color:#7fd17f">+${s.pts}</span>` : ''}${duel.answered.has(p.key) ? ' ✓' : ''}</span>`;
+    return `<span class="chip ${duel.answered.has(p.key) ? 'done' : ''}">${p.bot ? '🤖' : '👤'} ${esc(p.name)} <span class="pts">${fmt(duel.scores[p.key] || 0)}</span>${s && s.pts ? ` <span style="color:#7fd17f">+${s.pts}</span>` : ''}${duel.answered.has(p.key) ? ' ✓' : ''}</span>`;
   }).join('');
 }
 
 // ================= Gefecht =================
-function battle(m) {
-  startBattle3d({
-    roster: m.roster, you: m.you, mode: m.mode, colors: m.colors, win: m.win,
-    onExit: (err) => { if (err) toast(err, 'err'); returnToWorld(); },
-    onEnd: ({ reward, data, box }) => { setData(data); box.innerHTML = reward ? rewardHTML(reward) : ''; announceExtras(reward && { medals: [], rankUp: reward.rankUp }); },
+function battleMenu() {
+  current = 'battle';
+  show(`<div class="wrap">${backBtn()}
+    <div class="title-bar"><h2>🪖 Gefecht 5 gegen 5</h2></div>
+    <p class="muted">Zwei Teams mit je 5 Soldaten und einem <b>Panzer</b>. Lauf zum Panzer deines Teams und steig mit <b>E</b> (oder dem Panzer-Knopf) ein – dann schießt du mit der großen Kanone! Das Team, das zuerst ${20} Gegner ausschaltet, gewinnt (oder wer nach 3 Minuten vorne liegt).</p>
+    <div class="grid">
+      <button class="tile hero" id="bOff"><span class="ic">🤖</span><b>Training gegen Bots</b><span>Sofort losspielen – du und 4 Bots gegen 5 Bots</span></button>
+      <button class="tile online" id="bQuick"><span class="ic">⚡</span><b>Schnelles Spiel</b><span>Online mit anderen Spielern</span></button>
+      <button class="tile" id="bCreate"><span class="ic">🔒</span><b>Raum erstellen</b><span>Freunde mit Code einladen</span></button>
+      <div class="tile"><span class="ic">🔑</span><b>Mit Code beitreten</b><input class="field" id="bCode" maxlength="4" placeholder="CODE" style="text-transform:uppercase;letter-spacing:4px;font-weight:800"><button class="btn" id="bJoin">Beitreten</button></div>
+    </div>
+    <div class="card help" style="margin-top:16px"><b>Steuerung</b><br>PC: <kbd>W A S D</kbd> laufen · Maus zielen · Klick/<kbd>Leertaste</kbd> schießen · <kbd>E</kbd> Panzer ein/aus<br>Handy/Tablet: linker Daumen laufen · rechter Daumen zielen und schießen · Panzer-Knopf</div>
+  </div>`);
+  $('#bOff').addEventListener('click', () => offlineBattle());
+  const join = async (msg) => {
+    if (!(await connectLive())) return;
+    unsubLobby();
+    unsubLobby = live.on(lobbyView('battle', (m) => { if (m.t === 'bstart') { unsubLobby(); onlineBattle(m); } }));
+    live.send({ t: 'join', kind: 'battle', ...msg });
+  };
+  $('#bQuick').addEventListener('click', () => join({}));
+  $('#bCreate').addEventListener('click', () => join({ create: true }));
+  $('#bJoin').addEventListener('click', () => { const c = $('#bCode').value.trim(); if (c.length === 4) join({ code: c }); else toast('Der Code hat 4 Zeichen.', 'err'); });
+}
+
+function offlineBattle() {
+  current = 'play';
+  startBattle({
+    mode: 'offline', name: S.profile.name, skin: S.profile.skin,
+    onExit: () => home(), onAgain: () => offlineBattle(),
+    onEnd: async ({ outcome, kills, tankKills, box }) => {
+      box.innerHTML = '<p class="muted" style="text-align:center">Belohnung wird gutgeschrieben …</p>';
+      const r = await api('POST', '/api/action', { type: 'battle', outcome, kills, tankKills });
+      if (r.status !== 200) { box.innerHTML = `<p class="muted" style="text-align:center">${esc(r.data.error || 'Keine Belohnung')}</p>`; return; }
+      setData(r.data);
+      box.innerHTML = rewardHTML(r.data.result);
+      announceExtras({ medals: [], rankUp: null });
+    },
+  });
+}
+
+function onlineBattle(m) {
+  current = 'play';
+  startBattle({
+    mode: 'online', roster: m.roster, you: m.you,
+    onExit: () => home(),
+    onError: (msg) => { toast(msg, 'err'); home(); },
+    onEnd: ({ reward, extra, box }) => { if (extra) setData(extra); box.innerHTML = reward ? rewardHTML(reward) : ''; },
   });
 }
 
 // ================= Minispiele =================
-let miniBox = null;
-function playMini(mod, group = null, players = []) {
+function playMini(mod) {
+  current = 'play';
   let game = null, ended = false, running = false;
-  const stage = createStage({ sticks: mod.sticks, onExit: () => { if (game && game.destroy) game.destroy(); stage.destroy(); if (group) live.send({ t: 'gscore', group, score: 0 }); returnToWorld(); } });
+  const stage = createStage({ sticks: mod.sticks, onExit: () => { if (game && game.destroy) game.destroy(); stage.destroy(); home(); } });
   const begin = () => {
     if (game && game.destroy) game.destroy();
     game = mod.create(stage, { skin: S.profile.skin });
     ended = false; running = false;
-    const o = stage.overlay(`<h2>${GAMES[mod.id].icon} ${GAMES[mod.id].name}</h2>
-      ${group ? `<div class="banner">🏁 Wettkampf mit: <b>${players.map(esc).join(', ')}</b></div>` : ''}
-      <div class="help">${mod.help}</div>
+    const o = stage.overlay(`<h2>${GAMES[mod.id].icon} ${GAMES[mod.id].name}</h2><div class="help">${mod.help}</div>
       ${S.profile.best[mod.id] ? `<p class="muted">Dein Rekord: <b>${fmt(S.profile.best[mod.id])}</b></p>` : ''}
       <div class="row" style="justify-content:center;margin-top:14px"><button class="btn gold big" id="gGo">LOS!</button></div>`);
     o.querySelector('#gGo').addEventListener('click', () => { o.remove(); running = true; sfx.click(); });
@@ -413,15 +425,10 @@ function playMini(mod, group = null, players = []) {
   };
   async function finish() {
     const score = Math.round(game.score);
-    const wasGroup = group;
-    if (group) { live.send({ t: 'gscore', group, score }); group = null; }
-    const o = stage.overlay(`<div class="result-big"><div class="muted">${GAMES[mod.id].name}</div><div class="num">${fmt(score)}</div><div>Punkte</div></div>
-      <div id="gGroup">${wasGroup ? '<p class="muted" style="text-align:center">Warte auf die anderen …</p>' : ''}</div>
-      <div id="gRew"><p class="muted" style="text-align:center">Wird gutgeschrieben …</p></div>
-      <div class="row" style="justify-content:center;margin-top:14px"><button class="btn gold" id="gBack">Zurück in die Welt</button>${wasGroup ? '' : '<button class="btn dark" id="gAgain">Nochmal</button>'}</div>`);
-    miniBox = o.querySelector('#gGroup');
-    o.querySelector('#gBack').addEventListener('click', () => { miniBox = null; if (game.destroy) game.destroy(); stage.destroy(); returnToWorld(); });
-    o.querySelector('#gAgain')?.addEventListener('click', () => { o.remove(); begin(); });
+    const o = stage.overlay(`<div class="result-big"><div class="muted">${GAMES[mod.id].name}</div><div class="num">${fmt(score)}</div><div>Punkte</div></div><div id="gRew"><p class="muted" style="text-align:center">Wird gutgeschrieben …</p></div>
+      <div class="row" style="justify-content:center;margin-top:14px"><button class="btn dark" id="gBack">Hauptquartier</button><button class="btn gold" id="gAgain">Nochmal</button></div>`);
+    o.querySelector('#gBack').addEventListener('click', () => { if (game.destroy) game.destroy(); stage.destroy(); home(); });
+    o.querySelector('#gAgain').addEventListener('click', () => { o.remove(); begin(); });
     const r = await api('POST', '/api/action', { type: 'game', game: mod.id, score, won: !!game.won });
     const box = o.querySelector('#gRew');
     if (r.status !== 200) { box.innerHTML = `<p class="muted" style="text-align:center">${esc(r.data.error || 'Keine Belohnung')}</p>`; return; }
@@ -431,21 +438,16 @@ function playMini(mod, group = null, players = []) {
   }
   begin();
 }
-function groupResult(m) {
-  const html = `<div class="list">${m.ranking.map((p, i) => `<div class="li top${i + 1}"><span class="pos">${p.score === null ? '…' : i + 1}</span><b>${esc(p.name)}</b><span class="spacer"></span><span class="val">${p.score === null ? 'spielt noch' : p.score < 0 ? 'aufgegeben' : fmt(p.score)}</span></div>`).join('')}</div>`;
-  if (miniBox && document.body.contains(miniBox)) miniBox.innerHTML = `<h3 style="margin:8px 0">🏁 Wettkampf</h3>${html}`;
-  else if (m.done) toast(`🏁 ${GAMES[m.game].name}: Sieger ist ${m.ranking[0].name} (${fmt(m.ranking[0].score)})`, 'gold');
-}
 
 // ================= Shop =================
 function shop() {
-  current = 'info';
+  current = 'shop';
   const p = S.profile;
-  show(`<div class="wrap">${backWorld}
+  show(`<div class="wrap">${backBtn()}
     <div class="title-bar"><h2>🎨 Shop</h2><span class="pill gold">🪙 ${fmt(p.coins)}</span></div>
     <div class="card row" style="margin-bottom:14px"><span style="font-size:36px">🃏</span><div class="spacer"><b>50:50-Joker</b><br><span class="muted">Entfernt im Quiz zwei falsche Antworten. Du hast ${p.jokers}.</span></div>
       <button class="btn gold" data-buy="joker" ${p.coins < JOKER_PRICE ? 'disabled' : ''}>🪙 ${JOKER_PRICE}</button></div>
-    <h3 style="margin:8px 0 10px">Tarnmuster – dein Skin in der Welt und im Gefecht</h3>
+    <h3 style="margin:8px 0 10px">Tarnmuster für Panzer und Helm</h3>
     <div class="grid small">${SKIN_ORDER.map((k) => {
       const s = SKINS[k], own = p.skins.includes(k), on = p.skin === k;
       return `<div class="tile item ${own ? 'owned' : ''} ${on ? 'on' : ''}"><canvas data-skin="${k}"></canvas><b>${s.name}</b>
@@ -466,9 +468,9 @@ function shop() {
 
 // ================= Medaillen =================
 function medals() {
-  current = 'info';
+  current = 'medals';
   const p = S.profile;
-  show(`<div class="wrap">${backWorld}
+  show(`<div class="wrap">${backBtn()}
     <div class="title-bar"><h2>🏅 Medaillen</h2><span class="pill">${p.medals.length} / ${MEDAL_ORDER.length}</span></div>
     <p class="muted">Jede neue Medaille bringt 50 Münzen.</p>
     <div class="grid">${MEDAL_ORDER.map((k) => `<div class="card medal ${p.medals.includes(k) ? '' : 'locked'}"><div class="ic">${MEDALS[k].icon}</div><div><b>${MEDALS[k].name}</b><br><span class="muted">${MEDALS[k].desc}</span></div></div>`).join('')}</div>
@@ -483,10 +485,10 @@ function medals() {
 // ================= Rangliste =================
 const BOARD_NAMES = { xp: '⭐ Dienstgrad (EP)', quiz: '🎖️ Quiz', battle: '🪖 Gefecht', range: '🎯 Schießstand', aa: '🛩️ Flugabwehr', para: '🪂 Fallschirm', mines: '💣 Minen', morse: '📻 Morse' };
 async function leaderboard(board = 'xp') {
-  current = 'info';
+  current = 'ranks';
   const r = await api('GET', '/api/leaderboard?board=' + board);
-  const top = r.data.top || [];
-  show(`<div class="wrap">${backWorld}
+  const top = (r.data.top || []);
+  show(`<div class="wrap">${backBtn()}
     <div class="title-bar"><h2>🏆 Rangliste</h2>${board === 'xp' ? `<span class="pill">Dein Platz: ${S.account.place}</span>` : ''}</div>
     <div class="tabsbar">${Object.entries(BOARD_NAMES).map(([k, n]) => `<button data-b="${k}" class="${k === board ? 'on' : ''}">${n}</button>`).join('')}</div>
     <div class="list">${top.length ? top.map((x, i) => `<div class="li top${i + 1} ${x.name === S.profile.name ? 'me' : ''}"><span class="pos">${i + 1}</span><b>${esc(x.name)}</b>${board === 'xp' ? `<span class="muted">${rankInfo(x.value).name}</span>` : ''}<span class="spacer"></span><span class="val">${fmt(x.value)}${board === 'xp' ? ' EP' : board === 'battle' ? ' Treffer' : ''}</span></div>`).join('') : '<p class="muted">Noch keine Einträge – sei der Erste!</p>'}</div>
@@ -496,21 +498,33 @@ async function leaderboard(board = 'xp') {
 
 // ================= Lexikon =================
 function lexicon() {
-  current = 'info';
-  show(`<div class="wrap">${backWorld}
+  current = 'lexicon';
+  show(`<div class="wrap">${backBtn()}
     <div class="title-bar"><h2>📖 Lexikon</h2></div>
     <div class="grid">${LEXICON.map((e) => `<div class="card lex"><div class="row"><span class="ic">${e.icon}</span><div><b style="font-family:var(--stencil);font-size:18px">${esc(e.name)}</b><br><span class="muted">${esc(e.type)} · ${esc(e.land)}</span></div></div>
       <dl>${e.facts.map(([a, b]) => `<dt>${esc(a)}</dt><dd>${esc(b)}</dd>`).join('')}</dl><div style="font-size:14px">${esc(e.text)}</div></div>`).join('')}</div>
   </div>`);
 }
 
+// ================= Profil =================
+function profile() {
+  current = 'profile';
+  show(`<div class="wrap">${backBtn()}
+    <div class="title-bar"><h2>⚙️ Profil</h2></div>
+    <div class="card">
+      <p>Angemeldet als <b>${esc(S.account.login)}</b> · Rang ${rankInfo(S.profile.xp).name}</p>
+      <div class="row"><button class="btn dark" id="pMute">${isMuted() ? '🔇 Ton an' : '🔊 Ton aus'}</button><button class="btn red" id="pOut">Abmelden</button></div>
+    </div></div>`);
+  $('#pMute').addEventListener('click', () => { setMuted(!isMuted()); profile(); });
+  $('#pOut').addEventListener('click', async () => { await api('POST', '/api/logout'); session.token = ''; live.close(); authView('login'); });
+}
+
 // ================= Admin =================
-async function admin() {
+function admin() {
   current = 'admin';
-  if (!(await connectLive())) return;
   let req = 0;
   const pending = new Map();
-  show(`<div class="wrap"><button class="back" data-go="settings">← Einstellungen</button>
+  show(`<div class="wrap">${backBtn()}
     <div class="title-bar"><h2>🛠️ Admin</h2></div>
     <div class="card"><label class="lbl">Admin-Code</label><input class="field" id="adCode" type="password" autocomplete="off">
       <div class="row" style="margin-top:10px"><button class="btn" data-a="check">Status</button><button class="btn dark" data-a="overview">Wer ist online?</button><button class="btn dark" data-a="log">Protokoll</button></div></div>
@@ -528,7 +542,8 @@ async function admin() {
     <div class="card" style="margin-top:12px"><div class="admin-out" id="adOut">Code eingeben und „Status“ drücken.</div></div></div>`, () => unsub());
   const unsub = live.on((m) => { if (m.t === 'adminRes' && pending.has(m.req)) { pending.get(m.req)(m); pending.delete(m.req); } });
   const out = (x) => { $('#adOut').textContent = typeof x === 'string' ? x : JSON.stringify(x, null, 2); };
-  $$('[data-a]').forEach((b) => b.addEventListener('click', () => {
+  $$('[data-a]').forEach((b) => b.addEventListener('click', async () => {
+    if (!(await connectLive())) return;
     const a = b.dataset.a, v = (id) => $(id).value.trim();
     const base = { code: $('#adCode').value, login: v('#adLogin') };
     const msg = {
@@ -541,7 +556,7 @@ async function admin() {
     }[a];
     if (a === 'delete' && !confirm(`Konto „${base.login}“ wirklich für immer löschen?`)) return;
     const id = ++req;
-    pending.set(id, (m) => { const { t: _t, req: _r, ...rest } = m; out(rest); if (m.error) sfx.wrong(); else sfx.click(); });
+    pending.set(id, (m) => { const { t, req: _r, ...rest } = m; out(rest); if (m.error) sfx.wrong(); else sfx.click(); });
     live.send({ t: 'admin', req: id, ...base, ...msg });
   }));
 }
