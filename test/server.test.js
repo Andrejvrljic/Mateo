@@ -70,7 +70,7 @@ test('Spielseite wird ausgeliefert', async () => {
   const res = await fetch(base + '/');
   assert.equal(res.status, 200);
   assert.match(await res.text(), /Kommando-Quiz/);
-  for (const f of ['/js/main.js', '/shared/battle.js', '/shared/questions.js', '/style.css']) assert.equal((await fetch(base + f)).status, 200, f);
+  for (const f of ['/js/main.js', '/js/world3d.js', '/js/battle3d.js', '/vendor/three.module.js', '/shared/battle.js', '/shared/world.js', '/style.css']) assert.equal((await fetch(base + f)).status, 200, f);
 });
 
 test('Datenbank ist erreichbar', async () => {
@@ -85,7 +85,7 @@ test('Ohne Konto: keine Aktionen und kein Online-Spiel', async () => {
   assert.equal((await api('POST', '/api/action', { type: 'daily' })).status, 401);
   assert.equal((await api('POST', '/api/quiz/start', {})).status, 401);
   const s = await socket();
-  s.send({ t: 'join', kind: 'quiz', create: true });
+  s.send({ t: 'wjoin', server: 'alpha' });
   assert.match((await s.wait((m) => m.t === 'error')).msg, /melde dich an/);
   s.close();
 });
@@ -151,75 +151,119 @@ test('Minispiele: Belohnung, Begrenzung, Bestenliste', async () => {
   assert.ok(lb.data.top.some((x) => x.name === login && x.value === 12000));
 });
 
-test('Multiplayer: Quiz-Duell zu zweit über Raum-Code', async () => {
+const STA = { battle: { x: 23, z: -13 }, quiz: { x: 0, z: -22 }, range: { x: 27, z: 10 } };
+async function onPlate(socks, plate, n) {
+  const p = STA[plate];
+  socks.forEach((s, i) => s.send({ t: 'pos', x: p.x + i * 0.5, z: p.z, ry: 0, m: 0 }));
+  return socks[0].wait((m) => m.t === 'w' && m.pl[plate] && m.pl[plate].m.length === n);
+}
+async function twoInWorld(server = 'alpha') {
   const A = await signup(), B = await signup();
   const a = await authed(A.token), b = await authed(B.token);
-  a.send({ t: 'join', kind: 'quiz', create: true, n: 3, cat: 'see' });
-  const lobby = await a.wait((m) => m.t === 'lobby');
-  assert.equal(lobby.host, true);
-  b.send({ t: 'join', kind: 'quiz', code: lobby.code });
-  await a.wait((m) => m.t === 'lobby' && m.players.length === 2);
-  b.send({ t: 'start' }); // kein Host -> nichts passiert
-  a.send({ t: 'start' });
-  const st = await b.wait((m) => m.t === 'qstart');
-  assert.equal(st.players.length, 2);
-  for (let i = 0; i < 3; i++) {
-    const q = await a.wait((m) => m.t === 'q' && m.i === i);
-    await b.wait((m) => m.t === 'q' && m.i === i);
-    assert.equal(q.a.length, 4);
-    a.send({ t: 'ans', i, c: 0 });
-    b.send({ t: 'ans', i, c: 1 });
-    const rv = await a.wait((m) => m.t === 'reveal' && m.i === i);
-    assert.equal(rv.scores.length, 2);
-  }
-  const ea = await a.wait((m) => m.t === 'qend', 10000);
-  const eb = await b.wait((m) => m.t === 'qend', 10000);
-  assert.equal(ea.ranking.length, 2);
-  assert.ok(ea.reward && ea.reward.xp > 0, 'Belohnung in der Datenbank');
-  assert.equal(eb.profile.stats.duels, 1);
+  a.send({ t: 'wjoin', server }); b.send({ t: 'wjoin', server });
+  const ja = await a.wait((m) => m.t === 'wjoined'); const jb = await b.wait((m) => m.t === 'wjoined');
+  return { A, B, a, b, ka: ja.you, kb: jb.you };
+}
+
+test('Welten: Serverliste, gemeinsamer Server, Spieler sehen sich laufen', async () => {
+  const { a, b, ka, kb } = await twoInWorld('bravo');
+  a.send({ t: 'worlds' });
+  const wl = await a.wait((m) => m.t === 'worlds');
+  assert.equal(wl.list.length, 3);
+  assert.ok(wl.list.find((w) => w.id === 'bravo').players >= 2);
+  await b.wait((m) => m.t === 'wplayers' && m.list.some((p) => p.key === ka) && m.list.some((p) => p.key === kb));
+  a.send({ t: 'pos', x: 5, z: 7, ry: 1, m: 1 });
+  const seen = await b.wait((m) => m.t === 'w' && m.p.some((p) => p[0] === ka && p[1] === 5 && p[2] === 7));
+  assert.ok(seen);
+  a.send({ t: 'wleave' }); await a.wait((m) => m.t === 'wleft');
   a.close(); b.close();
 });
 
-test('Multiplayer: Gefecht 5 gegen 5 – zwei Spieler, Bots füllen auf, Steuerung kommt an', async () => {
+test('Welten: eigene Welt allein und Server mit Code', async () => {
   const A = await signup(), B = await signup();
   const a = await authed(A.token), b = await authed(B.token);
-  a.send({ t: 'join', kind: 'battle', create: true });
-  const lobby = await a.wait((m) => m.t === 'lobby');
-  b.send({ t: 'join', kind: 'battle', code: lobby.code });
-  await a.wait((m) => m.t === 'lobby' && m.players.length === 2);
-  a.send({ t: 'start' });
+  a.send({ t: 'wjoin', solo: true });
+  const solo = await a.wait((m) => m.t === 'wjoined');
+  assert.equal(solo.world.solo, true);
+  assert.equal(solo.world.code, null);
+  a.send({ t: 'wjoin', create: true, name: 'Kaserne Test' });
+  const priv = await a.wait((m) => m.t === 'wjoined');
+  assert.equal(priv.world.code.length, 4);
+  assert.equal(priv.world.name, 'Kaserne Test');
+  b.send({ t: 'wjoin', code: 'ZZZZ' });
+  assert.match((await b.wait((m) => m.t === 'error')).msg, /Code/);
+  b.send({ t: 'wjoin', code: priv.world.code.toLowerCase() });
+  const jb = await b.wait((m) => m.t === 'wjoined');
+  assert.equal(jb.world.code, priv.world.code);
+  await a.wait((m) => m.t === 'wplayers' && m.list.length === 2);
+  a.close(); b.close();
+});
+
+test('Druckplatte Gefecht: Chef stellt Teams, Farben und Modus ein und startet', async () => {
+  const { a, b, ka, kb } = await twoInWorld();
+  const w = await onPlate([a, b], 'battle', 2);
+  assert.equal(w.pl.battle.m[0], ka, 'wer zuerst drauf ist, ist Chef');
+  a.send({ t: 'plateCfg', plate: 'battle', teams: { [ka]: 1, [kb]: 1 }, colors: [2, 3], mode: 'conquest' });
+  await a.wait((m) => m.t === 'w' && m.pl.battle && m.pl.battle.cfg.mode === 'conquest');
+  b.send({ t: 'plateStart', plate: 'battle' }); // kein Chef -> nichts
+  a.send({ t: 'plateStart', plate: 'battle' });
   const sa = await a.wait((m) => m.t === 'bstart');
   const sb = await b.wait((m) => m.t === 'bstart');
+  assert.equal(sa.mode, 'conquest');
+  assert.deepEqual(sa.colors, ['#3fa14a', '#e0b12f']);
   assert.equal(sa.roster.length, 10);
-  assert.equal(sa.roster.filter((p) => p.human).length, 2);
-  assert.notEqual(sa.roster.find((p) => p.id === sa.you).team, sb.roster.find((p) => p.id === sb.you).team, 'zwei Spieler werden auf beide Teams verteilt');
+  assert.equal(sa.roster.find((p) => p.id === sa.you).team, 1);
+  assert.equal(sb.roster.find((p) => p.id === sb.you).team, 1, 'beide im selben Team');
   const first = await a.wait((m) => m.t === 's');
-  assert.equal(first.u.length, 10);
-  assert.equal(first.k.length, 2);
-  const x0 = first.u.find((u) => u[0] === sa.you)[2];
+  assert.equal(first.z.length, 3, 'Zonen A, B, C');
+  const busy = await b.wait((m) => m.t === 'w' && (m.p.find((p) => p[0] === ka)[4] & 2));
+  assert.ok(busy, 'in der Welt als „im Spiel“ markiert');
+  const x0 = first.u.find((u) => u[0] === sa.you);
   await a.wait((m) => m.t === 's' && m.ph === 'play', 6000);
-  const iv = setInterval(() => a.send({ t: 'in', mx: 0, my: 1, a: 0, f: false }), 50);
+  const iv = setInterval(() => a.send({ t: 'in', mx: 0, my: 1, a: 0, f: true, w: 1 }), 50);
   await new Promise((r) => setTimeout(r, 900));
   clearInterval(iv);
   a.msgs.length = 0;
-  const later = await a.wait((m) => m.t === 's');
-  const y1 = later.u.find((u) => u[0] === sa.you)[2];
-  assert.ok(Math.abs(y1 - x0) > 1, `Spieler hat sich bewegt (${x0} -> ${y1})`);
-  a.send({ t: 'leave' }); b.send({ t: 'leave' });
-  await a.wait((m) => m.t === 'left');
+  const later = (await a.wait((m) => m.t === 's')).u.find((u) => u[0] === sa.you);
+  assert.ok(Math.abs(later[2] - x0[2]) > 1, 'Spieler hat sich bewegt');
+  assert.equal(later[7], 1, 'Waffe gewechselt (MG)');
+  a.send({ t: 'back' }); b.send({ t: 'back' });
+  await b.wait((m) => m.t === 'w' && !(m.p.find((p) => p[0] === ka)[4] & 2));
   a.close(); b.close();
 });
 
-test('Schnelles Spiel: öffentliche Lobby startet von selbst mit Bots', { skip: !!process.env.TEST_URL }, async () => {
-  const A = await signup();
-  const a = await authed(A.token);
-  a.send({ t: 'join', kind: 'quiz' });
-  const l = await a.wait((m) => m.t === 'lobby');
-  assert.equal(l.pub, true);
-  assert.ok(l.startIn > 0);
-  const st = await a.wait((m) => m.t === 'qstart', 15000);
-  assert.ok(st.players.length >= 2, 'Bots spielen mit');
-  a.close();
+test('Druckplatte Quiz: zu zweit wird es ein Quiz-Duell', async () => {
+  const { a, b } = await twoInWorld('charlie');
+  await onPlate([a, b], 'quiz', 2);
+  a.send({ t: 'plateCfg', plate: 'quiz', cat: 'see', n: 3 });
+  await a.wait((m) => m.t === 'w' && m.pl.quiz && m.pl.quiz.cfg.n === 3);
+  a.send({ t: 'plateStart', plate: 'quiz' });
+  const st = await b.wait((m) => m.t === 'qstart');
+  assert.equal(st.players.length, 2);
+  assert.equal(st.cat, 'see');
+  for (let i = 0; i < 3; i++) {
+    await a.wait((m) => m.t === 'q' && m.i === i); await b.wait((m) => m.t === 'q' && m.i === i);
+    a.send({ t: 'ans', i, c: 0 }); b.send({ t: 'ans', i, c: 1 });
+    assert.equal((await a.wait((m) => m.t === 'reveal' && m.i === i)).scores.length, 2);
+  }
+  const ea = await a.wait((m) => m.t === 'qend', 10000);
+  assert.ok(ea.reward && ea.reward.xp > 0, 'Belohnung in der Datenbank');
+  assert.equal(ea.profile.stats.duels, 1);
+  a.close(); b.close();
+});
+
+test('Druckplatte Minispiel: Wettkampf mit gemeinsamer Rangliste', async () => {
+  const { a, b } = await twoInWorld('charlie');
+  await onPlate([a, b], 'range', 2);
+  a.send({ t: 'plateStart', plate: 'range' });
+  const la = await a.wait((m) => m.t === 'launch'); const lb = await b.wait((m) => m.t === 'launch');
+  assert.equal(la.game, 'range');
+  assert.equal(la.group, lb.group);
+  a.send({ t: 'gscore', group: la.group, score: 900 });
+  b.send({ t: 'gscore', group: lb.group, score: 1200 });
+  const r = await a.wait((m) => m.t === 'gresult' && m.done);
+  assert.equal(r.ranking[0].score, 1200);
+  a.close(); b.close();
 });
 
 // Nur lokal: der echte Admin-Code ist geheim
@@ -244,7 +288,7 @@ test('Admin: nur mit Admin-Konto und Code', { skip: !!process.env.TEST_URL }, as
   await admin(a, { code: 'TestCode123', action: 'motd', text: 'Willkommen!' });
   assert.equal((await api('GET', '/api/news')).data.motd, 'Willkommen!');
   await admin(a, { code: 'TestCode123', action: 'maintenance', on: true, text: 'Kurze Pause' });
-  p.send({ t: 'join', kind: 'quiz', create: true });
+  p.send({ t: 'wjoin', server: 'alpha' });
   assert.match((await p.wait((m) => m.t === 'error')).msg, /Kurze Pause/);
   await admin(a, { code: 'TestCode123', action: 'maintenance', on: false });
   await admin(a, { code: 'TestCode123', action: 'ban', login: P.login, on: true });
