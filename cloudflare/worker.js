@@ -27,7 +27,9 @@ export class HubDO {
   }
 }
 
-const hubStub = (env) => env.HUB.get(env.HUB.idFromName('hub'));
+// Pro veröffentlichter Version ein eigener Multiplayer-Server: so läuft nach jedem Deploy
+// garantiert der neue Code (ein alter, noch laufender Server würde sonst weiter antworten).
+const hubStub = (env) => env.HUB.get(env.HUB.idFromName('hub:' + (env.VERSION || 'dev')));
 
 export default {
   async fetch(request, env) {
