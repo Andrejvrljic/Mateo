@@ -3,10 +3,8 @@ import { SKINS, RANK_BADGE } from '../shared/progress.js';
 
 const camoCache = new Map();
 // Tarnmuster als wiederholbares Muster
-export function camo(g, skin) { return g.createPattern(camoCanvas(skin), 'repeat'); }
-export function camoCanvas(skin) {
-  const key = SKINS[skin] ? skin : 'oliv';
-  skin = key;
+export function camo(g, skin) {
+  const key = skin;
   if (!camoCache.has(key)) {
     const s = SKINS[skin] || SKINS.oliv;
     const c = document.createElement('canvas'); c.width = c.height = 64;
@@ -30,7 +28,7 @@ export function camoCanvas(skin) {
     }
     camoCache.set(key, c);
   }
-  return camoCache.get(key);
+  return g.createPattern(camoCache.get(key), 'repeat');
 }
 
 // Panzer von oben. Größe s = Länge der Wanne. teamColor optional (Markierung)
