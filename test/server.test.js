@@ -78,6 +78,7 @@ test('Datenbank ist erreichbar', async () => {
   assert.equal(h.status, 200);
   assert.equal(h.data.db, true);
   assert.ok(h.data.questions > 100);
+  assert.ok('worlds' in h.data, 'Multiplayer-Server läuft mit dem aktuellen Code (Welten)');
   assert.equal((await api('GET', '/api/leaderboard?board=xp')).status, 200);
 });
 
